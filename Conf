@@ -1,0 +1,140 @@
+import requests
+import json
+import faiss
+import numpy as np
+from bs4 import BeautifulSoup
+from sentence_transformers import SentenceTransformer
+
+# -----------------------------------
+# Configuration
+# -----------------------------------
+CONFLUENCE_BASE_URL = "https://your-domain.atlassian.net/wiki"  # Replace with your base URL
+SPACE_KEY = "global"  # Replace with your space key
+USERNAME = "your-email@example.com"
+PERSONAL_ACCESS_TOKEN = "your_token_here"
+
+# Load embedding model
+# (You can also use 'all-mpnet-base-v2' for higher accuracy)
+embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+
+# -----------------------------------
+# Fetch Confluence Content
+# -----------------------------------
+def get_page_content(page_id):
+    url = f"{CONFLUENCE_BASE_URL}/rest/api/content/{page_id}?expand=body.storage"
+    response = requests.get(url, auth=(USERNAME, PERSONAL_ACCESS_TOKEN))
+    response.raise_for_status()
+    data = response.json()
+    content_html = data.get('body', {}).get('storage', {}).get('value', '')
+    return content_html
+
+def get_child_pages(parent_id):
+    url = f"{CONFLUENCE_BASE_URL}/rest/api/content/{parent_id}/child/page?limit=100"
+    response = requests.get(url, auth=(USERNAME, PERSONAL_ACCESS_TOKEN))
+    response.raise_for_status()
+    return response.json().get('results', [])
+
+def fetch_space_pages(space_key):
+    url = f"{CONFLUENCE_BASE_URL}/rest/api/content?spaceKey={space_key}&type=page&limit=100"
+    response = requests.get(url, auth=(USERNAME, PERSONAL_ACCESS_TOKEN))
+    response.raise_for_status()
+    return response.json().get('results', [])
+
+def crawl_pages(pages, collected_pages):
+    for page in pages:
+        page_id = page['id']
+        page_title = page['title']
+        page_url = f"{CONFLUENCE_BASE_URL}{page['_links']['webui']}"
+        content_html = get_page_content(page_id)
+
+        # Clean HTML to text
+        content_text = clean_html(content_html)
+
+        collected_pages.append({
+            'id': page_id,
+            'title': page_title,
+            'url': page_url,
+            'content': content_text
+        })
+
+        # Recurse for child pages
+        children = get_child_pages(page_id)
+        if children:
+            crawl_pages(children, collected_pages)
+
+# -----------------------------------
+# Cleaning
+# -----------------------------------
+def clean_html(html_content):
+    """Convert HTML content to clean text."""
+    soup = BeautifulSoup(html_content, "html.parser")
+    text = soup.get_text(separator=" ", strip=True)
+    return text
+
+# -----------------------------------
+# Embeddings & FAISS Index
+# -----------------------------------
+def create_faiss_index(documents):
+    """Create FAISS index from document contents."""
+    texts = [doc['content'] for doc in documents]
+    embeddings = embedding_model.encode(texts, convert_to_numpy=True)
+
+    dimension = embeddings.shape[1]
+    index = faiss.IndexFlatL2(dimension)
+    index.add(embeddings)
+
+    return index, embeddings
+
+# -----------------------------------
+# Save / Load
+# -----------------------------------
+def save_index(index, docs):
+    faiss.write_index(index, "confluence_index.faiss")
+    with open("confluence_docs.json", "w", encoding="utf-8") as f:
+        json.dump(docs, f, ensure_ascii=False, indent=4)
+
+def load_index():
+    index = faiss.read_index("confluence_index.faiss")
+    with open("confluence_docs.json", "r", encoding="utf-8") as f:
+        docs = json.load(f)
+    return index, docs
+
+# -----------------------------------
+# Query Bot
+# -----------------------------------
+def query_bot(index, docs, query, top_k=3):
+    query_embedding = embedding_model.encode([query], convert_to_numpy=True)
+    distances, indices = index.search(query_embedding, top_k)
+
+    results = []
+    for idx in indices[0]:
+        doc = docs[idx]
+        results.append({
+            "title": doc['title'],
+            "url": doc['url'],
+            "content_snippet": doc['content'][:300] + "..."
+        })
+    return results
+
+# -----------------------------------
+# Main Flow
+# -----------------------------------
+if __name__ == "__main__":
+    print("🚀 Fetching all Confluence pages...")
+    collected_pages = []
+    top_pages = fetch_space_pages(SPACE_KEY)
+    crawl_pages(top_pages, collected_pages)
+
+    print(f"✅ Total pages fetched: {len(collected_pages)}")
+
+    print("🧠 Creating FAISS index...")
+    index, embeddings = create_faiss_index(collected_pages)
+    save_index(index, collected_pages)
+    print("📦 Index and docs saved.")
+
+    # Example query
+    query = "How to deploy the project?"
+    print(f"\n🔎 Query: {query}")
+    results = query_bot(index, collected_pages, query)
+    for r in results:
+        print(f"📄 {r['title']}\n🔗 {r['url']}\n📝 {r['content_snippet']}\n")
