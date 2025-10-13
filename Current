@@ -1,0 +1,103 @@
+import requests
+from requests.auth import HTTPBasicAuth
+import json
+import time
+
+# ========================
+# 🧭 CONFIG
+# ========================
+BASE_URL = "https://confluence.tcs.com/ETCB/confluence"
+SPACE_KEY = "ITSEC"
+ROOT_PAGE_TITLE = "Global Soc"
+EMAIL = "your.email@tcs.com"
+API_TOKEN = "your_personal_access_token"
+
+# ========================
+# 🧰 AUTH
+# ========================
+auth = HTTPBasicAuth(EMAIL, API_TOKEN)
+headers = {"Accept": "application/json"}
+
+
+# ========================
+# 🧭 Helper: Get page ID from title
+# ========================
+def get_page_id_from_title(space_key, title):
+    url = f"{BASE_URL}/rest/api/content"
+    params = {
+        "spaceKey": space_key,
+        "title": title,
+        "expand": "version"
+    }
+    resp = requests.get(url, headers=headers, auth=auth, params=params)
+    resp.raise_for_status()
+    data = resp.json()
+    if data["results"]:
+        return data["results"][0]["id"]
+    else:
+        raise Exception(f"Page '{title}' not found in space '{space_key}'")
+
+
+# ========================
+# 📄 Helper: Fetch page details (including content & children)
+# ========================
+def get_page_details(page_id):
+    url = f"{BASE_URL}/rest/api/content/{page_id}"
+    params = {
+        "expand": "body.storage,ancestors,children.page"
+    }
+    resp = requests.get(url, headers=headers, auth=auth, params=params)
+    resp.raise_for_status()
+    return resp.json()
+
+
+# ========================
+# 🔁 Recursive Crawler
+# ========================
+def crawl_page(page_id, path=None, results=None):
+    if results is None:
+        results = []
+    if path is None:
+        path = []
+
+    page_data = get_page_details(page_id)
+    title = page_data["title"]
+    content = page_data["body"]["storage"]["value"]
+    url = f"{BASE_URL}{page_data['_links']['webui']}"
+    new_path = path + [title]
+
+    results.append({
+        "id": page_id,
+        "title": title,
+        "path": " > ".join(new_path),
+        "url": url,
+        "content_html": content
+    })
+
+    children = page_data.get("children", {}).get("page", {}).get("results", [])
+    for child in children:
+        child_id = child["id"]
+        # Optional: rate limiting to avoid getting blocked
+        time.sleep(0.2)
+        crawl_page(child_id, new_path, results)
+
+    return results
+
+
+# ========================
+# 🚀 Main
+# ========================
+if __name__ == "__main__":
+    print("[*] Fetching root page ID...")
+    root_id = get_page_id_from_title(SPACE_KEY, ROOT_PAGE_TITLE)
+    print(f"[+] Root page ID: {root_id}")
+
+    print("[*] Crawling all pages...")
+    all_pages = crawl_page(root_id)
+    print(f"[+] Total pages fetched: {len(all_pages)}")
+
+    # Save to a file for inspection
+    with open("confluence_pages.json", "w", encoding="utf-8") as f:
+        json.dump(all_pages, f, indent=2, ensure_ascii=False)
+
+    print("[✅] Done. Data saved to confluence_pages.json")
