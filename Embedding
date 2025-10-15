@@ -1,0 +1,76 @@
+import json
+from langchain_community.embeddings import SentenceTransformerEmbeddings
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.vectorstores import FAISS
+from langchain.docstore.document import Document
+
+# 📂 Step 1: Load JSON Data
+def load_confluence_json(file_path):
+    with open(file_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return data
+
+# 🧱 Step 2: Convert JSON to LangChain Documents
+def build_documents(confluence_pages):
+    docs = []
+    for page in confluence_pages:
+        metadata = {
+            "page_id": page.get("page_id"),
+            "title": page.get("title")
+        }
+        content = page.get("content", "").strip()
+        if content:
+            docs.append(Document(page_content=content, metadata=metadata))
+    return docs
+
+# ✂️ Step 3: Split Large Text into Chunks
+def split_documents(documents, chunk_size=1000, chunk_overlap=100):
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        separators=["\n\n", "\n", ".", " "]
+    )
+    return splitter.split_documents(documents)
+
+# 🧠 Step 4: Create Embeddings
+def get_embeddings_model():
+    # You can use different models (e.g. all-MiniLM-L6-v2)
+    return SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
+
+# 💾 Step 5: Build FAISS Vector Store and Save Locally
+def build_and_save_vectorstore(chunks, embeddings, save_path="faiss_index"):
+    vectorstore = FAISS.from_documents(chunks, embeddings)
+    vectorstore.save_local(save_path)
+    print(f"✅ Vector store saved locally at: {save_path}")
+
+# 🚀 Main Pipeline
+if __name__ == "__main__":
+    json_file = "confluence_pages.json"  # path to your JSON
+    data = load_confluence_json(json_file)
+
+    print(f"📄 Loaded {len(data)} pages from JSON.")
+
+    docs = build_documents(data)
+    print(f"📝 Converted into {len(docs)} base documents.")
+
+    chunks = split_documents(docs)
+    print(f"✂️ Split into {len(chunks)} chunks for embedding.")
+
+    embeddings = get_embeddings_model()
+    build_and_save_vectorstore(chunks, embeddings)
+
+
+from langchain.vectorstores import FAISS
+from langchain_community.embeddings import SentenceTransformerEmbeddings
+
+# Load index
+embeddings = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
+vectorstore = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
+
+query = "What alerts are currently open in Global SOC?"
+results = vectorstore.similarity_search(query, k=3)
+
+for r in results:
+    print("🔸", r.page_content)
+    print("📎", r.metadata)
+    print("----")
